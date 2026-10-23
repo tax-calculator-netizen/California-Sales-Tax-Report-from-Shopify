@@ -1,0 +1,840 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CA Sales Tax Calculator</title>
+<!--
+  California quarterly sales tax return (CDTFA-401) from Shopify reports.
+  Runs entirely in the browser; the CSV files never leave this computer.
+
+  Inputs (Shopify admin > Analytics > Reports, date range = the quarter):
+    * SALES report: "Total sales over time" with dimensions Sale ID, Order name, Shipping region
+      and the returns metrics (Returns, Shipping returned, Taxes returned, Total returns).
+      Optional extra dimensions that make it more robust: Shipping country, Sales channel.
+    * TAX report: "Taxes" with dimensions Order name, Tax name, Tax rate, Tax region
+      (plus Sales channel, Filed by channel, Tax country).
+
+  WHEN SHOPIFY CHANGES THE REPORTS: columns are matched against SALES_COLUMNS / TAX_COLUMNS
+  (case, spaces and punctuation ignored) and California tax names against TAX_NAME_RULES.
+  If a report changes, the page shows an error naming the missing column or unrecognized tax
+  name; add the new spelling to the right list below and reload. The consistency checks catch
+  changes in a column's *meaning* that renaming can't.
+-->
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #5d6675; --line: #dde1e7;
+    --accent: #2f6fdd; --accent-soft: #e8f0fd; --ok: #1f7a4d; --ok-soft: #e5f4ec;
+    --warn: #8a5a00; --warn-soft: #fff4dc; --err: #b3261e; --err-soft: #fde8e7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15181d; --card: #1e232a; --text: #e6e9ee; --muted: #9aa3b0; --line: #333a44;
+      --accent: #7aa7ff; --accent-soft: #1f2c44; --ok: #6fd3a0; --ok-soft: #173326;
+      --warn: #f2c066; --warn-soft: #3a2d12; --err: #ff8a80; --err-soft: #3d1c1a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  h2 { font-size: 1.05rem; margin: 0 0 10px; }
+  p.sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 16px 18px; margin-bottom: 16px; }
+  #drop { border: 2px dashed var(--line); border-radius: 10px; padding: 28px 16px; text-align: center;
+          cursor: pointer; transition: border-color .15s, background .15s; }
+  #drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  #drop strong { color: var(--accent); }
+  .files { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin-top: 12px;
+           font-size: .9rem; }
+  .files .k { color: var(--muted); }
+  .files .v { overflow-wrap: anywhere; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td { padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.n { text-align: right; white-space: nowrap; padding-left: 16px; }
+  td.ln { color: var(--muted); white-space: nowrap; width: 4.5em; }
+  tr.total td { font-weight: 600; border-top: 2px solid var(--text); border-bottom: none; }
+  .note { color: var(--muted); font-size: .85rem; margin: 10px 0 0; }
+  button { font: inherit; background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+           padding: 6px 12px; cursor: pointer; margin: 4px 6px 0 0; }
+  button.copy { background: transparent; color: var(--accent); border: 1px solid var(--line);
+                padding: 1px 8px; font-size: .8rem; margin: 0 0 0 8px; }
+  .banner { border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-weight: 600; }
+  .banner.ok { background: var(--ok-soft); color: var(--ok); }
+  .banner.err { background: var(--err-soft); color: var(--err); }
+  ul.msgs { margin: 0; padding-left: 20px; }
+  ul.msgs li { margin: 4px 0; }
+  .warnbox { background: var(--warn-soft); border-color: transparent; }
+  .warnbox h2 { color: var(--warn); }
+  .errbox { background: var(--err-soft); border-color: transparent; }
+  .errbox h2 { color: var(--err); }
+  label.excl { display: block; font-size: .9rem; color: var(--muted); margin-top: 12px; }
+  input[type=text] { font: inherit; width: 100%; padding: 6px 8px; margin-top: 4px; border-radius: 6px;
+                     border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  .hidden { display: none; }
+  details.howto summary { cursor: pointer; font-weight: 600; }
+  details.howto[open] summary { margin-bottom: 8px; }
+  details.howto h3 { font-size: .95rem; margin: 16px 0 6px; }
+  details.howto ol { margin: 0; padding-left: 22px; }
+  details.howto li { margin: 4px 0; }
+  details.howto .tip { color: var(--muted); font-size: .9rem; }
+  b.ui { font-weight: 600; }
+  @media (max-width: 560px) { td.ln { display: none; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>California Sales Tax Calculator</h1>
+  <p class="sub">CDTFA-401 quarterly return from Shopify's sales and tax reports. Files stay on this computer.</p>
+
+  <details class="card howto">
+    <summary>How to download the two reports from Shopify</summary>
+    <p class="tip">You need two CSV exports from the Shopify admin, both for the same date range: the calendar quarter
+    you're filing for. Shopify changes its report menus from time to time, so names may differ slightly. If a
+    required column is missing, this page will tell you which one.</p>
+
+    <h3>1. Sales report</h3>
+    <ol>
+      <li>In the Shopify admin, go to <b class="ui">Analytics → Reports</b> and open <b class="ui">Total sales over time</b>
+        (search for it if it isn't listed).</li>
+      <li>Set the date range to the quarter, e.g. Apr 1 – Jun 30. Turn off the comparison period if one is selected.</li>
+      <li>Under <b class="ui">Dimensions</b>, add: <b class="ui">Sale ID</b>, <b class="ui">Order name</b> and
+        <b class="ui">Shipping region</b>. If a time dimension such as Day or Month is present, you can remove it.</li>
+      <li>Under <b class="ui">Metrics</b>, make sure these are included, adding any that aren't:
+        <b class="ui">Gross sales</b>, <b class="ui">Discounts</b>, <b class="ui">Returns</b>, <b class="ui">Net sales</b>,
+        <b class="ui">Shipping charges</b>, <b class="ui">Taxes</b>, <b class="ui">Total sales</b>,
+        <b class="ui">Shipping returned</b>, <b class="ui">Taxes returned</b> and <b class="ui">Total returns</b>.
+        The three "returned" metrics are usually not there by default. Without them, returns can't be handled correctly.</li>
+      <li>Optional, but recommended if available: add the <b class="ui">Shipping country</b> and <b class="ui">Sales channel</b>
+        dimensions. These help identify international orders and draft orders.</li>
+    </ol>
+
+    <h3>2. Tax report</h3>
+    <ol>
+      <li>Go to <b class="ui">Analytics → Reports</b> and open <b class="ui">Taxes</b>.</li>
+      <li>Set the same date range as the sales report.</li>
+      <li>Under <b class="ui">Dimensions</b>, add <b class="ui">Order name</b>. Also check that <b class="ui">Tax name</b>,
+        <b class="ui">Tax rate</b>, <b class="ui">Tax region</b>, <b class="ui">Tax country</b>, <b class="ui">Sales channel</b>
+        and <b class="ui">Filed by channel</b> are present (they normally are by default).</li>
+    </ol>
+
+    <h3>3. Export each report</h3>
+    <ol>
+      <li>Click the <b class="ui">Export</b> button (it may be under the <b class="ui">…</b> menu).</li>
+      <li>Choose <b class="ui">CSV</b> as the file type.</li>
+      <li>Select <b class="ui">All results from the data query</b>, not "Only results displayed in the report". The
+        other option may leave out part of the data, which would silently drop orders.</li>
+    </ol>
+    <p class="tip">Tip: after setting up each report, use <b class="ui">Save as</b> to keep a copy of it. Next quarter you'll
+    only need to change the date range.</p>
+
+    <h3>4. Run the calculation</h3>
+    <ol>
+      <li>Drop both CSV files onto the box below, or click it to choose them.</li>
+      <li>Optional: also add CDTFA's Schedule A Excel workbook (<b class="ui">cdtfa531a2e.xlsx</b>) for the quarter. A built-in copy
+        of CDTFA's district list is included. The workbook is only needed if CDTFA adds a new city district tax that the
+        built-in list doesn't have yet. A warning will tell you if that happens.</li>
+      <li>Check any warnings and draft orders listed with the results before entering the numbers on your return.</li>
+    </ol>
+    <p class="tip">Everything runs in your browser. The files are never uploaded anywhere. This is a calculation aid,
+    not tax advice: review the results before filing.</p>
+  </details>
+
+  <div class="card">
+    <div id="drop" tabindex="0">
+      Drop the <strong>sales report</strong> and <strong>tax report</strong> CSVs here (both at once, any order),<br>
+      or click to choose them. Optionally add this quarter's <strong>CDTFA Schedule A workbook</strong> (.xlsx)
+      to update the district list.
+    </div>
+    <input id="picker" type="file" accept=".csv,text/csv,.xlsx" multiple class="hidden">
+    <div class="files">
+      <span class="k">Sales report</span><span class="v" id="f-sales">—</span>
+      <span class="k">Tax report</span><span class="v" id="f-tax">—</span>
+      <span class="k">District list</span><span class="v" id="f-dist">—</span>
+    </div>
+    <label class="excl">Orders to exclude (e.g. draft orders that weren't real sales), comma-separated:
+      <input type="text" id="exclude" placeholder="#1001, #1002">
+    </label>
+  </div>
+
+  <div id="results"></div>
+</main>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// Column names: first entry is the current Shopify name, the rest are older/alternate spellings.
+// ---------------------------------------------------------------------------
+const SALES_COLUMNS = {
+  order:             ["Order name", "Order", "Name"],
+  region:            ["Shipping region", "Shipping province", "Shipping state"],
+  net_sales:         ["Net sales"],
+  shipping:          ["Shipping charges", "Shipping"],
+  taxes:             ["Taxes", "Tax"],
+  total:             ["Total sales"],
+  gross:             ["Gross sales"],
+  discounts:         ["Discounts"],
+  returns:           ["Returns", "Net returns"],
+  duties:            ["Duties"],
+  fees:              ["Additional fees"],
+  shipping_returned: ["Shipping returned"],
+  taxes_returned:    ["Taxes returned"],
+  total_returns:     ["Total returns"],
+  country:           ["Shipping country"],
+  channel:           ["Sales channel", "Order sales channel"],
+  sale_type:         ["Sale type", "Order or return", "Order or sales reversal"],
+};
+const SALES_REQUIRED = ["order", "region", "net_sales", "shipping", "taxes", "total"];
+
+const TAX_COLUMNS = {
+  order:            ["Order name", "Order"],
+  tax_name:         ["Tax name", "Name"],
+  rate:             ["Tax rate", "Rate"],
+  amount:           ["Sales taxes", "Amount", "Taxes", "Tax amount"],
+  tax_region:       ["Tax region", "Region"],
+  tax_country:      ["Tax country", "Country"],
+  channel:          ["Sales channel", "Order sales channel"],
+  filed_by_channel: ["Filed by channel"],
+};
+const TAX_REQUIRED = ["order", "tax_name", "rate", "amount", "tax_region"];
+
+const CALIFORNIA = new Set(["california", "ca"]);
+const US = new Set(["unitedstates", "us", "usa"]);
+const MARKETPLACE_CHANNELS = new Set(["shop"]);   // Shopify is the marketplace facilitator
+const DRAFT_CHANNELS = new Set(["draft orders"]);
+
+// California tax name classification, checked in order.
+//   base        - part of the statewide 7.25% (state 6% + Bradley-Burns local 1% + county 0.25%)
+//   county_base - "<County> County Tax", which is ambiguous. Since mid-2025 Shopify uses it for the
+//                 0.25% county portion of the statewide rate (next to a 6% state and 1% local line).
+//                 Before that, the state line was the full 7.25% and this was the county district
+//                 tax. So it counts as base only when it's 0.25% and the other base lines total 7.00%.
+//   county      - county-wide district tax; group 1 is the county name
+//   city        - city district tax; group 1 is the city name
+const TAX_NAME_RULES = [
+  [/^California State Tax$/i,                          "base"],
+  [/^.+ Local Tax( Sl)?$/i,                            "base"],
+  [/^(.+?) County Tax$/i,                              "county_base"],
+  [/^(.+?) (?:County|Co) District Tax( Sp)?$/i,        "county"],
+  [/^(.+?) City Tax( Sp)?$/i,                          "city"],
+  [/^(?:City of )?(.+?) (?:City )?District Tax( Sp)?$/i, "city"],
+];
+const BASE_COUNTY_RATE = 0.0025;
+const STATEWIDE_RATE = 0.0725;
+const STATE_ONLY = "State rate only (no district tax)";
+
+// Built-in copy of CDTFA's district table (Schedule A workbook), used when no workbook is loaded.
+// [area name, city code, district rate] in the workbook's ScheduleA order.
+const DISTRICT_SNAPSHOT = { effective: "April 1, 2026", areas: [
+  ["ALAMEDA COUNTY","966",0.03], ["Alameda","967",0.035], ["Albany","968",0.035], ["Emeryville","969",0.0325],
+  ["Hayward","970",0.035], ["Newark","971",0.035], ["Oakland","D10",0.035], ["San Leandro","972",0.035],
+  ["Union City","973",0.035], ["AMADOR COUNTY","194",0.005], ["Amador City","B13",0.0075],
+  ["Sutter Creek","B17",0.015], ["BUTTE COUNTY","B18",0.01], ["Chico","B19",0.02], ["Oroville","B20",0.02],
+  ["Paradise","B21",0.015], ["CALAVERAS COUNTY","A94",0.01], ["Angels Camp","A95",0.015],
+  ["COLUSA COUNTY","A10",0.005], ["Colusa","A12",0.015], ["Williams","A13",0.01],
+  ["CONTRA COSTA COUNTY","816",0.015], ["Antioch","817",0.025], ["Concord","819",0.025],
+  ["El Cerrito","820",0.03], ["Hercules","821",0.02], ["Lafayette","B23",0.02], ["Martinez","822",0.025],
+  ["Moraga","823",0.025], ["Orinda","825",0.025], ["Pinole","B25",0.03], ["Pittsburg","827",0.02],
+  ["Pleasant Hill","828",0.02], ["Richmond","829",0.025], ["San Pablo","989",0.0225],
+  ["San Ramon","B27",0.025], ["Walnut Creek","A15",0.02], ["DEL NORTE COUNTY","",0.0],
+  ["Del Norte County Unincorporated Area","831",0.01], ["Crescent City","833",0.01],
+  ["EL DORADO COUNTY","",0.0], ["Placerville","457",0.01], ["South Lake Tahoe","836",0.015],
+  ["FRESNO COUNTY","99",0.00725], ["Clovis","B29",0.01725], ["Coalinga","656",0.01725],
+  ["Fowler","658",0.01725], ["Fresno","961",0.011], ["Huron","352",0.01725], ["Kerman","660",0.01725],
+  ["Kingsburg","636",0.01725], ["Mendota","A77",0.01975], ["Parlier","756",0.01725],
+  ["Reedley","778",0.01975], ["Sanger","179",0.01475], ["Selma","169",0.01225], ["GLENN COUNTY","",0.0],
+  ["Orland","B30",0.01], ["Willows","B31",0.015], ["HUMBOLDT COUNTY","B33",0.015], ["Arcata","B35",0.03],
+  ["Blue Lake","B36",0.025], ["Eureka","B37",0.03], ["Ferndale","B38",0.0225], ["Fortuna","B39",0.0225],
+  ["Rio Dell","B40",0.0225], ["Trinidad","B41",0.0225], ["IMPERIAL COUNTY","29",0.005],
+  ["Brawley","B43",0.015], ["Calexico","230",0.01], ["El Centro","462",0.01], ["INYO COUNTY","14",0.005],
+  ["Bishop","838",0.015], ["KERN COUNTY","",0.0], ["Kern County Unincorporated Area","A20",0.01],
+  ["Arvin","198",0.01], ["Bakersfield","741",0.01], ["California City","D04",0.01], ["Delano","170",0.01],
+  ["Maricopa","B44",0.01], ["McFarland","D18",0.02], ["Ridgecrest","A23",0.02], ["Taft","974",0.01],
+  ["Tehachapi","A24",0.01], ["Wasco","464",0.01], ["KINGS COUNTY","",0.0], ["Avenal","A25",0.01],
+  ["Corcoran","603",0.01], ["Hanford","B45",0.01], ["Lemoore","D01",0.01], ["LAKE COUNTY","",0.0],
+  ["Clearlake","468",0.015], ["Lakeport","466",0.015], ["LASSEN COUNTY","",0.0], ["Susanville","990",0.01],
+  ["LOS ANGELES COUNTY","B47",0.025], ["Alhambra","B48",0.0325], ["Arcadia","B49",0.0325],
+  ["Artesia","B51",0.0325], ["Avalon","B52",0.03], ["Azusa","B54",0.035], ["Baldwin Park","B55",0.0325],
+  ["Bell Gardens","B56",0.0325], ["Bellflower","B57",0.0325], ["Burbank","B58",0.0325],
+  ["Carson","B59",0.0325], ["Commerce","B60",0.0325], ["Compton","B61",0.035], ["Covina","B62",0.0325],
+  ["Cudahy","B63",0.0325], ["Culver City","D16",0.035], ["Downey","B66",0.0325], ["Duarte","B67",0.0325],
+  ["El Monte","B69",0.0325], ["Gardena","B70",0.0325], ["Glendale","B71",0.0325], ["Glendora","B73",0.035],
+  ["Hawaiian Gardens","B74",0.0325], ["Hawthorne","B75",0.0325], ["Huntington Park","B76",0.0325],
+  ["Inglewood","B77",0.03], ["Irwindale","B79",0.035], ["La Ca\u00f1ada Flintridge","B80",0.0325],
+  ["La Puente","B81",0.03], ["La Verne","B82",0.0325], ["Lakewood","B83",0.0325], ["Lancaster","B85",0.04],
+  ["Lawndale","B86",0.0325], ["Lomita","B87",0.0325], ["Long Beach","B88",0.0325], ["Lynwood","B89",0.035],
+  ["Malibu","B90",0.03], ["Manhattan Beach","B92",0.03], ["Monrovia","B93",0.0325],
+  ["Montebello","B94",0.0325], ["Monterey Park","B95",0.0325], ["Norwalk","B96",0.0325],
+  ["Palmdale","B98",0.04], ["Paramount","B99",0.0325], ["Pasadena","C01",0.0325], ["Pico Rivera","C02",0.035],
+  ["Pomona","C03",0.0325], ["San Fernando","C04",0.0325], ["San Gabriel","C05",0.0325],
+  ["Santa Fe Springs","D20",0.0375], ["Santa Monica","C07",0.035], ["Sierra Madre","C08",0.0325],
+  ["Signal Hill","C09",0.0325], ["South El Monte","C11",0.035], ["South Gate","C12",0.035],
+  ["South Pasadena","C13",0.0325], ["Torrance","C14",0.03], ["Vernon","C15",0.0325],
+  ["West Hollywood","C16",0.0325], ["Whittier","C17",0.0325], ["MADERA COUNTY","144",0.005],
+  ["Chowchilla","682",0.015], ["Madera","476",0.01], ["MARIN COUNTY","994",0.01],
+  ["Corte Madera","995",0.0175], ["Fairfax","996",0.0175], ["Larkspur","A33",0.02],
+  ["Mill Valley","C19",0.02], ["Novato","C21",0.02], ["San Anselmo","A35",0.02], ["San Rafael","A01",0.02],
+  ["Sausalito","A37",0.02], ["MARIPOSA COUNTY","A03",0.01], ["MENDOCINO COUNTY","A41",0.00625],
+  ["Fort Bragg","C23",0.02], ["Point Arena","C99",0.02], ["Ukiah","A44",0.01625], ["Willits","A45",0.01875],
+  ["MERCED COUNTY","481",0.005], ["Atwater","A47",0.015], ["Dos Palos","D12",0.01], ["Gustine","484",0.01],
+  ["Livingston","C25",0.015], ["Los Banos","684",0.015], ["Merced","A93",0.01], ["MONO COUNTY","",0.0],
+  ["Mammoth Lakes","183",0.005], ["MONTEREY COUNTY","",0.0],
+  ["Monterey County Unincorporated Area","C27",0.015], ["Carmel-by-the-Sea","804",0.02],
+  ["Del Rey Oaks","490",0.02], ["Gonzales","866",0.015], ["Greenfield","494",0.0225],
+  ["King City","686",0.015], ["Marina","688",0.02], ["Monterey","806",0.02], ["Pacific Grove","A06",0.02],
+  ["Salinas","489",0.02], ["Sand City","A49",0.02], ["Seaside","605",0.02], ["Soledad","868",0.02],
+  ["NAPA COUNTY","631",0.005], ["Napa","C29",0.015], ["St. Helena","632",0.01],
+  ["NEVADA COUNTY","502",0.0025], ["Grass Valley","A81",0.01625], ["Nevada City","A83",0.01625],
+  ["Truckee","C31",0.0175], ["ORANGE COUNTY","37",0.005], ["Buena Park","C33",0.015],
+  ["Fountain Valley","512",0.015], ["Garden Grove","696",0.015], ["La Habra","C35",0.015],
+  ["La Palma","508",0.015], ["Los Alamitos","870",0.02], ["Placentia","690",0.015], ["Santa Ana","692",0.02],
+  ["Seal Beach","C37",0.02], ["Stanton","414",0.015], ["Westminster","A85",0.02], ["PLACER COUNTY","",0.0],
+  ["Loomis","513",0.0025], ["Roseville","697",0.005], ["RIVERSIDE COUNTY","26",0.005], ["Blythe","814",0.015],
+  ["Cathedral City","C39",0.02], ["Coachella","416",0.015], ["Corona","938",0.015],
+  ["Desert Hot Springs","C41",0.015], ["Hemet","515",0.015], ["Indio","517",0.015],
+  ["Lake Elsinore","872",0.015], ["La Quinta","521",0.015], ["Menifee","525",0.015],
+  ["Moreno Valley","C43",0.015], ["Murrieta","701",0.015], ["Norco","699",0.015], ["Palm Desert","C45",0.015],
+  ["Palm Springs","621",0.02], ["Riverside","519",0.015], ["San Jacinto","874",0.015],
+  ["Temecula","523",0.015], ["Wildomar","703",0.015], ["SACRAMENTO COUNTY","23",0.005],
+  ["Elk Grove","A53",0.015], ["Galt","A55",0.02], ["Isleton","985",0.015], ["Rancho Cordova","876",0.015],
+  ["Sacramento","705",0.015], ["SAN BENITO COUNTY","706",0.01], ["Hollister","707",0.02],
+  ["San Juan Bautista","708",0.0175], ["SAN BERNARDINO COUNTY","31",0.005], ["Apple Valley","C47",0.015],
+  ["Barstow","710",0.015], ["Chino","A87",0.015], ["Colton","A57",0.015], ["Fontana","C49",0.015],
+  ["Montclair","878",0.0175], ["Ontario","A59",0.015], ["Redlands","880",0.015],
+  ["San Bernardino","882",0.015], ["Victorville","884",0.015], ["Yucaipa","C51",0.015],
+  ["Yucca Valley","530",0.015], ["SAN DIEGO COUNTY","13",0.005], ["Chula Vista","644",0.015],
+  ["Del Mar","534",0.015], ["El Cajon","431",0.01], ["Escondido","C53",0.015], ["Imperial Beach","886",0.015],
+  ["La Mesa","210",0.0125], ["Lemon Grove","D06",0.015], ["National City","137",0.015],
+  ["Oceanside","712",0.01], ["San Marcos","C55",0.015], ["Solana Beach","A61",0.015], ["Vista","151",0.01],
+  ["SAN FRANCISCO COUNTY","940",0.01375], ["SAN JOAQUIN COUNTY","38",0.005], ["Escalon","D03",0.015],
+  ["Lathrop","324",0.015], ["Lodi","714",0.01], ["Manteca","C57",0.0175], ["Stockton","538",0.0175],
+  ["Tracy","536",0.01], ["SAN LUIS OBISPO COUNTY","",0.0], ["Arroyo Grande","C59",0.015],
+  ["Atascadero","888",0.015], ["Grover Beach","925",0.015], ["Morro Bay","889",0.015],
+  ["Paso Robles","891",0.015], ["Pismo Beach","C60",0.01], ["San Luis Obispo","892",0.015],
+  ["SAN MATEO COUNTY","942",0.02125], ["Belmont","943",0.02625], ["Brisbane","A63",0.02625],
+  ["Burlingame","944",0.02375], ["Colma","D08",0.02625], ["Daly City","945",0.02625],
+  ["Half Moon Bay","C62",0.02625], ["Pacifica","A65",0.02625], ["East Palo Alto","946",0.02625],
+  ["Redwood City","947",0.02625], ["San Bruno","948",0.02625], ["San Mateo","949",0.02375],
+  ["South San Francisco","950",0.02625], ["SANTA BARBARA COUNTY","30",0.005], ["Carpinteria","720",0.0175],
+  ["Goleta","A79",0.015], ["Guadalupe","897",0.015], ["Lompoc","808",0.015], ["Santa Barbara","C64",0.02],
+  ["Santa Maria","718",0.015], ["Solvang","A67",0.015], ["SANTA CLARA COUNTY","D22",0.025],
+  ["Campbell","D23",0.0325], ["Los Gatos","D24",0.02625], ["Milpitas","D25",0.0275],
+  ["San Jose","D26",0.0275], ["SANTA CRUZ COUNTY","",0.0],
+  ["Santa Cruz County Unincorporated Area","A89",0.0225], ["Capitola","C68",0.02], ["Santa Cruz","A91",0.025],
+  ["Scotts Valley","810",0.025], ["Watsonville","A69",0.025], ["SHASTA COUNTY","",0.0],
+  ["Anderson","373",0.005], ["SISKIYOU COUNTY","",0.0], ["Dunsmuir","D27",0.01],
+  ["Mount Shasta","266",0.0025], ["Weed","432",0.0025], ["Yreka","C70",0.015], ["SOLANO COUNTY","66",0.00125],
+  ["Benicia","C72",0.02375], ["Dixon","C74",0.01125], ["Fairfield","337",0.01125],
+  ["Rio Vista","C76",0.01875], ["Suisun City","C78",0.01875], ["Vacaville","557",0.00875],
+  ["Vallejo","A71",0.02], ["SONOMA COUNTY","C80",0.02], ["Cloverdale","C82",0.0275], ["Cotati","C83",0.03],
+  ["Healdsburg","C84",0.025], ["Petaluma","C85",0.03], ["Rohnert Park","C86",0.025],
+  ["Santa Rosa","C87",0.0275], ["Sebastopol","D14",0.0325], ["Sonoma","C91",0.03],
+  ["STANISLAUS COUNTY","567",0.00625], ["Ceres","568",0.01125], ["Modesto","A73",0.01625],
+  ["Oakdale","569",0.01125], ["Turlock","920",0.01375], ["TEHAMA COUNTY","",0.0], ["Corning","446",0.005],
+  ["Red Bluff","424",0.0025], ["TULARE COUNTY","162",0.005], ["Dinuba","165",0.0125], ["Exeter","922",0.015],
+  ["Farmersville","629",0.015], ["Lindsay","607",0.015], ["Porterville","734",0.02], ["Tulare","167",0.01],
+  ["Visalia","571",0.0125], ["Woodlake","627",0.015], ["TUOLUMNE COUNTY","",0.0], ["Sonora","A75",0.015],
+  ["VENTURA COUNTY","",0.0], ["Oxnard","924",0.02], ["Port Hueneme","736",0.015], ["Santa Paula","C93",0.02],
+  ["Ventura","573",0.005], ["YOLO COUNTY","",0.0], ["Davis","C94",0.02], ["West Sacramento","C96",0.02],
+  ["Winters","C97",0.01], ["Woodland","236",0.0075], ["YUBA COUNTY","",0.0],
+  ["Yuba County Unincorporated Area","739",0.01], ["Marysville","447",0.01], ["Wheatland","265",0.005],
+]};
+
+// ---------------------------------------------------------------------------
+// helpers (money is kept in integer cents to avoid floating point drift)
+// ---------------------------------------------------------------------------
+const norm = s => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const rateEq = (a, b) => Math.abs(a - b) < 1e-7;
+
+function cents(s) {
+  s = (s || "").trim().replace(/[$,]/g, "");
+  if (!s) return 0;
+  let neg = false;
+  if (s.startsWith("(") && s.endsWith(")")) { neg = true; s = s.slice(1, -1); }
+  if (!/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(s)) throw new Error("not a number: " + JSON.stringify(s));
+  const v = Math.round(parseFloat(s) * 100);
+  return neg ? -v : v;
+}
+function parseRate(s) {
+  s = (s || "").trim();
+  if (s.endsWith("%")) return parseFloat(s) / 100;
+  const v = s ? parseFloat(s) : 0;
+  if (isNaN(v)) throw new Error("not a rate: " + JSON.stringify(s));
+  return v > 1 ? v / 100 : v;
+}
+const fmt = c => (c < 0 ? "-" : "") + (Math.abs(c) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const plain = c => (c / 100).toFixed(2);
+const pct = r => (r * 100).toFixed(4) + "%";
+const orderKey = s => { s = (s || "").trim(); return !s || s.startsWith("#") ? s : "#" + s; };
+const esc = s => String(s).replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+
+function parseCSV(text) {
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  const rows = []; let row = [], field = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) {
+      if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; }
+      else field += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === ",") { row.push(field); field = ""; }
+    else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      row.push(field); rows.push(row); row = []; field = "";
+    } else field += ch;
+  }
+  if (field || row.length) { row.push(field); rows.push(row); }
+  while (rows.length && !rows[0].some(c => c.trim())) rows.shift();
+  return rows;
+}
+
+function sniffKind(header) {
+  const n = new Set(header.map(norm));
+  const any = (...xs) => xs.some(x => n.has(x));
+  if (any("taxname", "name") && any("salestaxes", "amount") && any("taxrate", "rate")) return "tax";
+  if (n.has("totalsales")) return "sales";
+  return null;
+}
+
+function mapColumns(header, spec, required, fileName, kind) {
+  const byNorm = new Map(header.map((h, i) => [norm(h), i]));
+  const cols = {}, missing = [];
+  for (const [key, aliases] of Object.entries(spec)) {
+    const hit = aliases.find(a => byNorm.has(norm(a)));
+    if (hit !== undefined) cols[key] = byNorm.get(norm(hit));
+    else if (required.includes(key)) missing.push(`${key} (tried: ${aliases.join(", ")})`);
+  }
+  if (missing.length) throw new Error(
+    `The ${kind} report "${fileName}" is missing required column(s): ${missing.join("; ")}. ` +
+    `Columns found: ${header.join(", ")}. If Shopify renamed a column, add the new name to ` +
+    `${kind.toUpperCase()}_COLUMNS at the top of this page's source.`);
+  return cols;
+}
+
+const datesInName = name => (name.match(/\d{4}-\d{2}-\d{2}/g) || []);
+
+// ---------------------------------------------------------------------------
+// CDTFA district table (Schedule A workbook, CDTFA-531-A2), used to find the county of each
+// city-level district tax. Rows come in CDTFA's order: an upper-case "<NAME> COUNTY"
+// row (with a code if there's a countywide district tax), then that county's cities and,
+// sometimes, a "<Name> County Unincorporated Area" row.
+// ---------------------------------------------------------------------------
+const CITY_ALIASES = {            // Shopify city name -> CDTFA district area name, where they differ
+  "San Buenaventura": "Ventura",
+};
+const cityKey = s => { s = (s || "").trim(); s = CITY_ALIASES[s] || s; return norm(s.replace(/^saint\b/i, "st")); };
+const countyKey = s => norm((s || "").trim().replace(/\s+county$/i, ""));
+const titleCase = s => s.toLowerCase().replace(/\b[a-z]/g, ch => ch.toUpperCase());
+
+function makeDistrictTable(rows, effective, source) {
+  const cities = new Map(), counties = new Map();
+  let county = null;
+  for (let [name, code, rate] of rows) {
+    name = String(name || "").replace(/\s+/g, " ").trim();
+    code = String(code || "").trim();
+    if (/^\d+$/.test(code)) code = code.padStart(3, "0");   // Excel stores codes like 037 as the number 37
+    rate = Number(rate) || 0;
+    if (/[A-Z]/.test(name) && name === name.toUpperCase() && / COUNTY$/.test(name)) {
+      county = titleCase(name);
+      if (code) counties.set(countyKey(county), { county, name: county, code, rate });
+    } else if (!code || !county) continue;
+    else if (/unincorporated/i.test(name)) {
+      if (!counties.has(countyKey(county))) counties.set(countyKey(county), { county, name, code, rate });
+    } else cities.set(cityKey(name), { county, name, code, rate });
+  }
+  if (!cities.size) throw new Error("no district tax areas found");
+  return { effective, source, city: n => cities.get(cityKey(n)), county: n => counties.get(countyKey(n)) };
+}
+
+// Minimal .xlsx (zip) reader using the browser's built-in DecompressionStream.
+async function unzip(buf) {
+  const dv = new DataView(buf), u8 = new Uint8Array(buf), dec = new TextDecoder();
+  let eocd = -1;
+  for (let i = buf.byteLength - 22; i >= Math.max(0, buf.byteLength - 65557); i--)
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error("not an .xlsx file");
+  const entries = new Map();
+  let p = dv.getUint32(eocd + 16, true);
+  for (let k = dv.getUint16(eocd + 10, true); k > 0; k--) {
+    if (dv.getUint32(p, true) !== 0x02014b50) throw new Error("damaged .xlsx file");
+    const nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true);
+    entries.set(dec.decode(u8.subarray(p + 46, p + 46 + nl)),
+      { method: dv.getUint16(p + 10, true), size: dv.getUint32(p + 20, true), off: dv.getUint32(p + 42, true) });
+    p += 46 + nl + xl + cl;
+  }
+  const read = async name => {
+    const e = entries.get(name);
+    if (!e) return null;
+    const start = e.off + 30 + dv.getUint16(e.off + 26, true) + dv.getUint16(e.off + 28, true);
+    const data = u8.subarray(start, start + e.size);
+    if (e.method === 0) return dec.decode(data);
+    if (e.method !== 8) throw new Error("unsupported .xlsx compression");
+    return new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).text();
+  };
+  return { names: [...entries.keys()], read };
+}
+
+async function loadDistrictWorkbook(buf, fileName) {
+  const z = await unzip(buf);
+  const parse = s => new DOMParser().parseFromString(s, "application/xml");
+  const texts = el => [...el.getElementsByTagName("t")].map(t => t.textContent).join("");
+  const ssXml = await z.read("xl/sharedStrings.xml");
+  const ss = ssXml ? [...parse(ssXml).getElementsByTagName("si")].map(texts) : [];
+  const eff = ss.map(s => s.match(/Rates Effective ([A-Za-z]+ \d+, \d{4})/)).find(Boolean);
+  const sheets = z.names.filter(n => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort();
+  for (const sheet of sheets) {
+    let cols = null;
+    const rows = [];
+    for (const r of parse(await z.read(sheet)).getElementsByTagName("row")) {
+      const d = {};
+      for (const c of r.getElementsByTagName("c")) {
+        const t = c.getAttribute("t"), v = c.getElementsByTagName("v")[0];
+        let val;
+        if (t === "inlineStr") val = texts(c);
+        else if (!v) continue;
+        else val = t === "s" ? ss[+v.textContent] : v.textContent;
+        d[c.getAttribute("r").replace(/\d+/g, "")] = val;
+      }
+      if (!cols) {
+        const f = {};
+        for (const [k, v] of Object.entries(d)) f[norm(v)] = k;
+        if (f.districttaxareas && f.citycode && f.rate) cols = [f.districttaxareas, f.citycode, f.rate];
+      } else if (d[cols[0]]) rows.push([d[cols[0]], d[cols[1]] || "", parseFloat(d[cols[2]]) || 0]);
+    }
+    if (cols) return makeDistrictTable(rows, eff ? eff[1] : "", fileName);
+  }
+  throw new Error("couldn't find the DISTRICT TAX AREAS / CITY CODE / RATE table");
+}
+
+// ---------------------------------------------------------------------------
+// main calculation
+// ---------------------------------------------------------------------------
+function newOrder(name) {
+  return { name, regions: new Set(), countries: new Set(), channels: new Set(),
+    sale: 0, tax: 0, ship: 0, retMerch: 0, net: 0, other: 0, taxAll: 0, hasReturns: false,
+    taxRowsAmount: 0, caTaxes: new Map(), caTaxAmount: 0, taxChannels: new Set(),
+    filedByChannel: false, inTaxReport: false };
+}
+
+function compute(sales, tax, excluded, districts) {
+  const warnings = [], errors = [];
+  const warn = m => warnings.push(m), error = m => errors.push(m);
+
+  const ds = datesInName(sales.name), dt = datesInName(tax.name);
+  if (ds.length && dt.length && ds.join() !== dt.join())
+    error(`The two reports cover different date ranges: ${ds.join(" – ")} vs ${dt.join(" – ")}`);
+
+  const orders = new Map();
+  const get = n => { if (!orders.has(n)) orders.set(n, newOrder(n)); return orders.get(n); };
+
+  // ---- sales report ----
+  let [header, ...rows] = sales.rows;
+  let c = mapColumns(header, SALES_COLUMNS, SALES_REQUIRED, sales.name, "sales");
+  const has = k => k in c;
+  if (!has("total_returns") && !has("sale_type"))
+    warn("Sales report has neither 'Total returns' nor 'Sale type', so returns can't be separated from sales. Add the returns metrics to the report.");
+  rows.forEach((row, i) => {
+    const lineNo = i + 2;
+    if (!row.some(x => x.trim())) return;
+    const txt = k => (k in c && c[k] < row.length) ? row[c[k]].trim() : "";
+    const val = k => cents(txt(k));
+    let total, net, ship, taxes, returns, other, rMerch, rShip, rTax, rTotal;
+    try {
+      total = val("total"); net = val("net_sales"); ship = val("shipping"); taxes = val("taxes");
+      returns = val("returns"); other = val("duties") + val("fees");
+      if (["return", "returns", "sales reversal", "reversal"].includes(txt("sale_type").toLowerCase())) {
+        rMerch = net; rShip = ship; rTax = taxes; rTotal = total;
+      } else {
+        rMerch = returns; rShip = val("shipping_returned"); rTax = val("taxes_returned");
+        rTotal = has("total_returns") ? val("total_returns") : rMerch + rShip + rTax;
+      }
+    } catch (e) { throw new Error(`Sales report line ${lineNo}: ${e.message}`); }
+
+    const name = orderKey(txt("order"));
+    if (!name) { if (total !== 0) error(`Sales report line ${lineNo} has amount ${fmt(total)} but no order name`); return; }
+    if (excluded.has(name)) return;
+
+    // Sanity checks that the columns still mean what we think they mean.
+    if (Math.abs(total - (net + ship + taxes + other)) > 1)
+      error(`Sales report line ${lineNo} (${name}): Total sales ${fmt(total)} ≠ Net sales + Shipping + Taxes + Duties + Fees (${fmt(net + ship + taxes + other)}). Shopify may have changed what a column means.`);
+    if (has("gross") && has("discounts") && has("returns") && !txt("sale_type") &&
+        Math.abs(net - (val("gross") + val("discounts") + returns)) > 1)
+      error(`Sales report line ${lineNo} (${name}): Net sales ≠ Gross sales + Discounts + Returns`);
+
+    const o = get(name);
+    if (txt("region")) o.regions.add(txt("region"));
+    if (txt("country")) o.countries.add(txt("country"));
+    if (txt("channel")) o.channels.add(txt("channel"));
+    o.sale += total - rTotal;
+    o.tax += taxes - rTax;
+    o.ship += ship - rShip;
+    o.retMerch -= rMerch;
+    o.net += net;
+    o.other += other;
+    o.taxAll += taxes;
+    if (rTotal !== 0) o.hasReturns = true;
+  });
+
+  // ---- tax report ----
+  [header, ...rows] = tax.rows;
+  c = mapColumns(header, TAX_COLUMNS, TAX_REQUIRED, tax.name, "tax");
+  const unknownNames = new Set();
+  rows.forEach((row, i) => {
+    const lineNo = i + 2;
+    if (!row.some(x => x.trim())) return;
+    const txt = k => (k in c && c[k] < row.length) ? row[c[k]].trim() : "";
+    const name = orderKey(txt("order"));
+    if (!name || excluded.has(name)) return;
+    let amt, r;
+    try { amt = cents(txt("amount")); r = parseRate(txt("rate")); }
+    catch (e) { throw new Error(`Tax report line ${lineNo}: ${e.message}`); }
+    if (!orders.has(name)) {
+      if (amt !== 0) warn(`Order ${name} is in the tax report (tax ${fmt(amt)}) but not in the sales report`);
+      return;
+    }
+    const o = orders.get(name);
+    o.inTaxReport = true;
+    o.taxRowsAmount += amt;
+    if (txt("channel")) o.taxChannels.add(txt("channel"));
+    if (txt("filed_by_channel").toLowerCase().replace(/_/g, " ") === "filed") o.filedByChannel = true;
+    const country = txt("tax_country");
+    if (CALIFORNIA.has(txt("tax_region").toLowerCase()) && (!country || US.has(norm(country)))) {
+      o.caTaxAmount += amt;
+      if (r > 0) {
+        const prev = o.caTaxes.get(txt("tax_name"));
+        if (prev !== undefined && !rateEq(prev, r))
+          warn(`Order ${name}: tax ${txt("tax_name")} appears with two rates (${prev}, ${r})`);
+        o.caTaxes.set(txt("tax_name"), r);
+      }
+    }
+  });
+
+  // ---- classify orders ----
+  let line1 = 0, a8 = 0, a9 = 0, a10 = 0, b3 = 0, mkt = 0;
+  const regions = new Map(), detail = [], drafts = [];
+  let intlBlank = 0;
+  const sorted = [...orders.values()].sort((x, y) => x.name.length - y.name.length || (x.name < y.name ? -1 : 1));
+  for (const o of sorted) {
+    line1 += o.sale;
+    const channels = new Set([...o.channels, ...o.taxChannels].map(s => s.toLowerCase()));
+    const hasAny = (set) => [...channels].some(ch => set.has(ch));
+    if (hasAny(DRAFT_CHANNELS)) drafts.push(o);
+
+    if (o.inTaxReport && Math.abs(o.taxAll - o.taxRowsAmount) > 1)
+      warn(`Order ${o.name}: sales report taxes ${fmt(o.taxAll)} but tax report sums to ${fmt(o.taxRowsAmount)}`);
+
+    const regionCA = [...o.regions].some(r => CALIFORNIA.has(r.toLowerCase()));
+    const nonUS = [...o.countries].some(x => !US.has(norm(x)));
+    let isCA = regionCA && !nonUS;
+    if (!o.regions.size && o.caTaxes.size) {
+      isCA = true;
+      warn(`Order ${o.name} has no shipping region but was charged California tax; treated as a California sale`);
+    }
+    if (o.regions.size > 1) warn(`Order ${o.name} has several shipping regions: ${[...o.regions].sort().join(", ")}`);
+    if (!isCA && o.caTaxAmount !== 0)
+      warn(`Order ${o.name} ships to ${[...o.regions].sort().join("/") || "(blank)"} but has California tax ${fmt(o.caTaxAmount)}`);
+    if (!o.regions.size && !o.countries.size && !o.caTaxes.size) intlBlank++;
+
+    const marketplace = o.filedByChannel || hasAny(MARKETPLACE_CHANNELS);
+    let juris = "", combined = 0, category;
+    if (!isCA) { a8 += o.sale; category = "interstate/foreign"; }
+    else if (marketplace) { mkt += o.sale; category = "CA marketplace (tax filed by Shopify)"; }
+    else {
+      category = "CA taxable";
+      a9 += o.tax; a10 += o.ship; b3 += o.retMerch;
+      if (o.other) warn(`Order ${o.name}: California order has duties/fees of ${fmt(o.other)}, counted as taxable`);
+      let county = null, city = null;
+      const classified = [];
+      for (const [tname, r] of o.caTaxes) {
+        combined += r;
+        let m = null, kind = null;
+        for (const [pattern, k] of TAX_NAME_RULES) { m = tname.match(pattern); if (m) { kind = k; break; } }
+        if (m) classified.push({ tname, r, kind, m }); else unknownNames.add(tname);
+      }
+      let baseRate = classified.filter(x => x.kind === "base").reduce((a, x) => a + x.r, 0);
+      for (let { r, kind, m } of classified) {
+        if (kind === "county_base") {
+          if (rateEq(r, BASE_COUNTY_RATE) && rateEq(baseRate + r, STATEWIDE_RATE)) { kind = "base"; baseRate += r; }
+          else kind = "county";
+        }
+        if (kind === "base") continue;
+        if (kind === "county") {
+          const nm = m[1].trim() + " County";
+          if (county && county !== nm) warn(`Order ${o.name} has district taxes for two counties: ${county}, ${nm}`);
+          county = nm;
+        } else if (kind === "city") {
+          const nm = m[1].trim();
+          if (city && city !== nm) warn(`Order ${o.name} has two city taxes: ${city}, ${nm}`);
+          city = nm;
+        }
+      }
+      if (o.caTaxes.size && !rateEq(baseRate, STATEWIDE_RATE))
+        warn(`Order ${o.name}: statewide tax components add up to ${pct(baseRate)}, expected 7.25%`);
+      if (!o.inTaxReport) warn(`California order ${o.name} is not in the tax report; counted as state-rate only`);
+      else if (o.tax === 0 && o.net > 0)
+        warn(`California order ${o.name} (${fmt(o.net)}) had no tax collected. If it was a resale or exempt sale, deduct it on the return.`);
+      // Spot-check that tax collected matches the jurisdiction's rate.
+      if (!o.hasReturns && o.net > 0 && o.tax > 0 && combined > 0) {
+        const expected = Math.round(o.net * combined);
+        if (Math.abs(expected - o.tax) > Math.max(5, o.tax * 0.02))
+          warn(`Order ${o.name}: tax collected ${fmt(o.tax)}, but ${fmt(o.net)} × ${pct(combined)} = ${fmt(expected)}`);
+      }
+      // Look the jurisdiction up in CDTFA's table for its county, city code and rate.
+      let area = null;
+      if (city) {
+        area = districts.city(city);
+        if (!area) warn(`Order ${o.name}: city '${city}' isn't in the CDTFA district table (${districts.source})`);
+        else if (county && countyKey(county) !== countyKey(area.county))
+          warn(`Order ${o.name}: Shopify says ${county}, but CDTFA lists ${area.name} in ${area.county}`);
+        else { county = area.county; city = area.name; }   // CDTFA's spelling
+      } else if (county) {
+        area = districts.county(county);
+        if (!area) warn(`Order ${o.name}: ${county} has no countywide district tax in the CDTFA table (${districts.source})`);
+      }
+      juris = city ? `${county || "Unknown County"}: ${city}` : (county || STATE_ONLY);
+      regions.set(juris, (regions.get(juris) || 0) + o.net + o.other);
+    }
+    detail.push({ o, category, juris, combined });
+  }
+
+  for (const t of [...unknownNames].sort())
+    error(`Unrecognized California tax name '${t}'. Add a pattern for it to TAX_NAME_RULES in this page's source.`);
+
+  const taxable = [...regions.values()].reduce((a, b) => a + b, 0);
+  const check = line1 - a8 - a9 - a10 - mkt - b3;
+  if (Math.abs(check - taxable) > 1)
+    error(`Totals don't reconcile: Line 1 minus deductions = ${fmt(check)}, but district sales add up to ${fmt(taxable)}`);
+
+  return { ds, line1, a8, a9, a10, b3, mkt, taxable, net: check, regions, detail, drafts, intlBlank, warnings, errors };
+}
+
+// ---------------------------------------------------------------------------
+// UI
+// ---------------------------------------------------------------------------
+const state = { sales: null, tax: null };
+const $ = id => document.getElementById(id);
+
+function copyBtn(c) { return `<button class="copy" data-copy="${plain(c)}" title="Copy">copy</button>`; }
+
+function render() {
+  const out = $("results");
+  $("f-sales").textContent = state.sales ? state.sales.name : "—";
+  $("f-tax").textContent = state.tax ? state.tax.name : "—";
+  const districts = state.districts || makeDistrictTable(DISTRICT_SNAPSHOT.areas, DISTRICT_SNAPSHOT.effective, "built-in copy");
+  $("f-dist").textContent = `${districts.source} (as of ${districts.effective || "unknown date"})`;
+  if (!state.sales || !state.tax) { out.innerHTML = ""; return; }
+  const excluded = new Set($("exclude").value.split(",").map(orderKey).filter(Boolean));
+  let r;
+  try { r = compute(state.sales, state.tax, excluded, districts); }
+  catch (e) {
+    out.innerHTML = `<div class="banner err">Couldn't process the reports</div>
+      <div class="card errbox"><h2>Error</h2><p>${esc(e.message)}</p></div>`;
+    return;
+  }
+
+  const line = (ln, label, v, cls = "") =>
+    `<tr class="${cls}"><td class="ln">${ln}</td><td>${label}</td><td class="n">${fmt(v)}${copyBtn(v)}</td></tr>`;
+  const counts = {};
+  r.detail.forEach(d => counts[d.category] = (counts[d.category] || 0) + 1);
+  const juris = [...r.regions.entries()].filter(([, v]) => v !== 0)
+    .sort(([a], [b]) => (a !== STATE_ONLY) - (b !== STATE_ONLY) || a.localeCompare(b));
+
+  let h = r.errors.length
+    ? `<div class="banner err">${r.errors.length} error(s): the numbers below are NOT reliable</div>`
+    : `<div class="banner ok">All consistency checks passed${r.warnings.length ? ` · ${r.warnings.length} warning(s) to review` : ""}</div>`;
+  if (r.errors.length)
+    h += `<div class="card errbox"><h2>Errors</h2><ul class="msgs">${r.errors.map(m => `<li>${esc(m)}</li>`).join("")}</ul></div>`;
+
+  h += `<div class="card"><h2>CDTFA-401 return${r.ds.length ? ` · ${r.ds.join(" to ")}` : ""}</h2><table>
+    ${line("Line 1", "Total (gross) sales", r.line1)}
+    ${line("A8", "Sales in interstate or foreign commerce", r.a8)}
+    ${line("A9", "Sales tax included in gross sales", r.a9)}
+    ${line("A10", "Other deductions (total of the two below)", r.a10 + r.mkt)}
+    ${line("", "&nbsp;&nbsp;&nbsp;shipping and delivery charges", r.a10)}
+    ${line("", "&nbsp;&nbsp;&nbsp;marketplace facilitator sales *", r.mkt)}
+    ${line("B3", "Returned taxable merchandise", r.b3)}
+    ${line("", "Net taxable California sales (Line 1 − A8 − A9 − A10 − B3)", r.net, "total")}
+    </table>
+    ${r.mkt ? `<p class="note">* California orders through the Shop channel, where Shopify collected and filed the tax
+    (merchandise + shipping + tax). They're on Line 1 and deducted here, not in A9 or B3.
+    Keep a record of these orders to support the deduction.</p>` : ""}</div>`;
+
+  h += `<div class="card"><h2>Taxable sales by district tax jurisdiction</h2><table>
+    ${juris.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${fmt(v)}${copyBtn(v)}</td></tr>`).join("")}
+    <tr class="total"><td>Total taxable California sales</td><td class="n">${fmt(r.taxable)}${copyBtn(r.taxable)}</td></tr>
+    </table>
+    <p class="note">A county name alone means sales in that county outside any city with its own district tax.</p></div>`;
+
+  h += `<div class="card"><h2>Orders</h2><p>${Object.entries(counts).sort().map(([k, n]) => `${n} ${esc(k)}`).join(" · ")}</p>
+    ${r.intlBlank ? `<p class="note">${r.intlBlank} have no shipping region and no tax lines. They're presumed international and counted in A8.</p>` : ""}
+    ${excluded.size ? `<p class="note">Excluded: ${esc([...excluded].join(", "))}</p>` : ""}
+    <button id="dl">Download per-order worksheet (CSV)</button></div>`;
+
+  if (r.drafts.length)
+    h += `<div class="card warnbox"><h2>Draft orders: confirm each was a real, paid sale</h2>
+      <p class="note">Add any that weren't to the exclude box above.</p><table>
+      ${r.drafts.map(o => `<tr><td>${esc(o.name)}</td><td>${esc([...o.regions].join("/") || "(no region)")}</td><td class="n">${fmt(o.sale)}</td></tr>`).join("")}
+      </table></div>`;
+  if (r.warnings.length)
+    h += `<div class="card warnbox"><h2>Warnings (${r.warnings.length}): review these</h2>
+      <ul class="msgs">${r.warnings.map(m => `<li>${esc(m)}</li>`).join("")}</ul></div>`;
+
+  out.innerHTML = h;
+  out.querySelectorAll("[data-copy]").forEach(b => b.onclick = () => {
+    navigator.clipboard.writeText(b.dataset.copy).then(() => { b.textContent = "copied"; setTimeout(() => b.textContent = "copy", 1200); });
+  });
+  $("dl").onclick = () => downloadWorksheet(r);
+}
+
+function downloadWorksheet(r) {
+  const q = v => /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+  const lines = [["Order", "Category", "Shipping region", "Channel", "Jurisdiction", "Gross sale (line 1)",
+    "Merchandise net of returns", "Shipping", "Tax collected", "Returned merchandise", "Combined rate", "CA tax names"]];
+  for (const { o, category, juris, combined } of r.detail)
+    lines.push([o.name, category, [...o.regions].sort().join("/"), [...new Set([...o.channels, ...o.taxChannels])].sort().join("/"),
+      juris, plain(o.sale), plain(o.net), plain(o.ship), plain(o.tax), plain(o.retMerch),
+      combined ? pct(combined) : "", [...o.caTaxes].sort().map(([n, rt]) => `${n} ${pct(rt)}`).join("; ")]);
+  const blob = new Blob(["﻿" + lines.map(l => l.map(String).map(q).join(",")).join("\r\n")], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `CA sales tax worksheet${r.ds.length ? " - " + r.ds.join(" - ") : ""}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+async function loadFiles(fileList) {
+  const problems = [];
+  for (const f of fileList) {
+    if (/\.xlsx$/i.test(f.name)) {
+      try { state.districts = await loadDistrictWorkbook(await f.arrayBuffer(), f.name); }
+      catch (e) { problems.push(`"${f.name}" couldn't be read as a CDTFA Schedule A workbook: ${e.message}. Using the previous district table.`); }
+      continue;
+    }
+    const rows = parseCSV(await f.text());
+    const kind = rows.length ? sniffKind(rows[0]) : null;
+    if (kind) state[kind] = { name: f.name, rows };
+    else problems.push(`"${f.name}" doesn't look like a Shopify sales or tax report (header: ${rows[0] ? rows[0].join(", ") : "empty"}).`);
+  }
+  render();
+  if (problems.length) $("results").insertAdjacentHTML("afterbegin",
+    `<div class="card errbox"><h2>Unrecognized file</h2><ul class="msgs">${problems.map(p => `<li>${esc(p)}</li>`).join("")}</ul></div>`);
+}
+
+const drop = $("drop");
+drop.onclick = () => $("picker").click();
+drop.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("picker").click(); } };
+$("picker").onchange = e => { loadFiles(e.target.files); e.target.value = ""; };
+["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => loadFiles(e.dataTransfer.files));
+$("exclude").addEventListener("input", render);
+render();
+
+// Exposed for testing from Node: module.exports when loaded outside a browser.
+if (typeof module !== "undefined") module.exports = { compute, parseCSV, sniffKind };
+</script>
+</body>
+</html>
