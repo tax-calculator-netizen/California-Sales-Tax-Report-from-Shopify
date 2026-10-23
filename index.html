@@ -77,7 +77,7 @@
   details.howto summary { cursor: pointer; font-weight: 600; }
   details.howto[open] summary { margin-bottom: 8px; }
   details.howto h3 { font-size: .95rem; margin: 16px 0 6px; }
-  details.howto ol { margin: 0; padding-left: 22px; }
+  details.howto ol, details.howto ul { margin: 0; padding-left: 22px; }
   details.howto li { margin: 4px 0; }
   details.howto .tip { color: var(--muted); font-size: .9rem; }
   b.ui { font-weight: 600; }
@@ -90,56 +90,71 @@
   <p class="sub">CDTFA-401 quarterly return from Shopify's sales and tax reports. Files stay on this computer.</p>
 
   <details class="card howto">
-    <summary>How to download the two reports from Shopify</summary>
-    <p class="tip">You need two CSV exports from the Shopify admin, both for the same date range: the calendar quarter
-    you're filing for. Shopify changes its report menus from time to time, so names may differ slightly. If a
-    required column is missing, this page will tell you which one.</p>
+    <summary>About this calculator, and how to get the reports from Shopify</summary>
+    <p>Calculates the numbers that you need for filing your California quarterly sales tax return (CDTFA-401) on the
+    <a href="https://onlineservices.cdtfa.ca.gov" target="_blank" rel="noopener">state web site</a>, calculated from two
+    basic Shopify reports. No apps or subscriptions are needed. Everything runs in your browser. Your CSV files are never
+    uploaded anywhere; you can read this page's source code to confirm this.</p>
+    <p>The important part is the list of your total sales in each California taxable district, for example:</p>
+    <ul>
+      <li>$138 in San Diego County - Escondido</li>
+      <li>$40 in Santa Clara County - San Jose</li>
+      <li>$82 in Alameda County (outside of any city's tax district)</li>
+      <li>...</li>
+    </ul>
+    <p>There's no single Shopify report that gives you this information, so it must be calculated by combining two reports.</p>
+
+    <h3>What it calculates</h3>
+    <ul>
+      <li>Line 1, Total (gross) sales</li>
+      <li>Line A8, Sales in interstate or foreign commerce</li>
+      <li>Line A9, Sales tax included in gross sales</li>
+      <li>Line A10, Other deductions: shipping and delivery charges, plus sales through Shopify's Shop channel
+        (where Shopify, as marketplace facilitator, collects and files the tax)</li>
+      <li>Line B3, Returned taxable merchandise</li>
+      <li>Taxable California sales for each district tax jurisdiction (county and city)</li>
+    </ul>
+
+    <h3>Getting the reports from Shopify</h3>
+    <p class="tip">Both reports must cover the same date range: the calendar quarter you're filing for. Shopify changes its
+    report menus from time to time, so names may differ slightly.</p>
 
     <h3>1. Sales report</h3>
     <ol>
-      <li>In the Shopify admin, go to <b class="ui">Analytics → Reports</b> and open <b class="ui">Total sales over time</b>
-        (search for it if it isn't listed).</li>
-      <li>Set the date range to the quarter, e.g. Apr 1 – Jun 30. Turn off the comparison period if one is selected.</li>
-      <li>Under <b class="ui">Dimensions</b>, add: <b class="ui">Sale ID</b>, <b class="ui">Order name</b> and
-        <b class="ui">Shipping region</b>. If a time dimension such as Day or Month is present, you can remove it.</li>
-      <li>Under <b class="ui">Metrics</b>, make sure these are included, adding any that aren't:
-        <b class="ui">Gross sales</b>, <b class="ui">Discounts</b>, <b class="ui">Returns</b>, <b class="ui">Net sales</b>,
-        <b class="ui">Shipping charges</b>, <b class="ui">Taxes</b>, <b class="ui">Total sales</b>,
-        <b class="ui">Shipping returned</b>, <b class="ui">Taxes returned</b> and <b class="ui">Total returns</b>.
-        The three "returned" metrics are usually not there by default. Without them, returns can't be handled correctly.</li>
-      <li>Optional, but recommended if available: add the <b class="ui">Shipping country</b> and <b class="ui">Sales channel</b>
-        dimensions. These help identify international orders and draft orders.</li>
+      <li>In the Shopify admin, go to <b class="ui">Analytics → Reports</b> and open <b class="ui">Total sales over time</b>.</li>
+      <li>Set the date range to the quarter. Turn off the comparison period if one is selected.</li>
+      <li>Under <b class="ui">Dimensions</b>, add <b class="ui">Sale ID</b>, <b class="ui">Order name</b> and
+        <b class="ui">Shipping region</b>. A time dimension such as Day or Month can be removed.</li>
+      <li>Under <b class="ui">Metrics</b>, make sure these are included: <b class="ui">Gross sales</b>, <b class="ui">Discounts</b>,
+        <b class="ui">Returns</b>, <b class="ui">Net sales</b>, <b class="ui">Shipping charges</b>, <b class="ui">Taxes</b>,
+        <b class="ui">Total sales</b>, <b class="ui">Shipping returned</b>, <b class="ui">Taxes returned</b> and
+        <b class="ui">Total returns</b>. The three "returned" metrics are usually not there by default, and returns can't
+        be handled correctly without them.</li>
     </ol>
 
     <h3>2. Tax report</h3>
     <ol>
       <li>Go to <b class="ui">Analytics → Reports</b> and open <b class="ui">Taxes</b>.</li>
-      <li>Set the same date range as the sales report.</li>
-      <li>Under <b class="ui">Dimensions</b>, add <b class="ui">Order name</b>. Also check that <b class="ui">Tax name</b>,
+      <li>Set the same date range.</li>
+      <li>Under <b class="ui">Dimensions</b>, add <b class="ui">Order name</b>. Check that <b class="ui">Tax name</b>,
         <b class="ui">Tax rate</b>, <b class="ui">Tax region</b>, <b class="ui">Tax country</b>, <b class="ui">Sales channel</b>
         and <b class="ui">Filed by channel</b> are present (they normally are by default).</li>
     </ol>
+    <p class="tip">Tip: use <b class="ui">Save as</b> to keep each configured report, so next quarter you only need to change
+    the date range.</p>
 
     <h3>3. Export each report</h3>
     <ol>
-      <li>Click the <b class="ui">Export</b> button (it may be under the <b class="ui">…</b> menu).</li>
-      <li>Choose <b class="ui">CSV</b> as the file type.</li>
-      <li>Select <b class="ui">All results from the data query</b>, not "Only results displayed in the report". The
-        other option may leave out part of the data, which would silently drop orders.</li>
+      <li>Click <b class="ui">Export</b> (it may be under the <b class="ui">…</b> menu).</li>
+      <li>Choose <b class="ui">CSV</b>.</li>
+      <li>Select <b class="ui">All results from the data query</b>.</li>
     </ol>
-    <p class="tip">Tip: after setting up each report, use <b class="ui">Save as</b> to keep a copy of it. Next quarter you'll
-    only need to change the date range.</p>
 
-    <h3>4. Run the calculation</h3>
-    <ol>
-      <li>Drop both CSV files onto the box below, or click it to choose them.</li>
-      <li>Optional: also add CDTFA's Schedule A Excel workbook (<b class="ui">cdtfa531a2e.xlsx</b>) for the quarter. A built-in copy
-        of CDTFA's district list is included. The workbook is only needed if CDTFA adds a new city district tax that the
-        built-in list doesn't have yet. A warning will tell you if that happens.</li>
-      <li>Check any warnings and draft orders listed with the results before entering the numbers on your return.</li>
-    </ol>
-    <p class="tip">Everything runs in your browser. The files are never uploaded anywhere. This is a calculation aid,
-    not tax advice: review the results before filing.</p>
+    <h3>4. Run it</h3>
+    <p>Drag and drop both CSV files onto the box below.</p>
+
+    <h3>Disclaimer</h3>
+    <p class="tip">This is a calculation aid, not tax advice. Review the results, and the warnings it shows, before filing.</p>
   </details>
 
   <div class="card">
