@@ -13,6 +13,10 @@ There's no single Shopify report that gives you this information, so it must be 
 
 **[Open the calculator](index.html)** — or download `index.html` and open it in any browser.
 
+## Example Calculator Output
+
+<img src="tax-report-0.png" alt="Screenshot of the calculator" width="600">
+
 ## What it calculates
 
 - Line 1, Total (gross) sales
