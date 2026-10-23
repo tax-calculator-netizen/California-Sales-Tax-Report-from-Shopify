@@ -11,7 +11,7 @@ The important part is the list of your total sales in each California taxable di
 
 There's no single Shopify report that gives you this information, so it must be calculated by combining two reports.
 
-**[Open the calculator](index.html)** — or download `index.html` and open it in any browser.
+**[Open the calculator](calculator.html)** — or download `calculator.html` and open it in any browser.
 
 ## Example Calculator Output
 
